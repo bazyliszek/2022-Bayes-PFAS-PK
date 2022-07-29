@@ -1,0 +1,888 @@
+---
+title: "PFOA 1 compartment Plots (v8)"
+author: "Weihsueh Chiu, Claire Lay, Parker Malek"
+date: "`r format(Sys.time(), '%F')`"
+knit: (function(inputFile, encoding) {outdir = file.path(dirname(inputFile), 'markdown', paste0(format(Sys.time(), '%F'))); if(!dir.exists(outdir)){dir.create(outdir)}; rmarkdown::render(inputFile, encoding = encoding, output_format = 'all', output_dir = outdir) })
+output:
+  word_document: default
+  html_notebook:
+    code_folding: hide
+    df_print: kable
+    toc: yes
+    toc_depth: 5
+---
+
+```{r setup}
+library(coda)
+library(bayesplot) 
+library(ggplot2)
+library(ggsci)
+library(khroma) # for colors
+library(tidyverse)
+library(reshape2)
+library(yardstick)
+library(here)
+knitr::opts_chunk$set(echo = TRUE, dpi = 300 )
+```
+
+Set up MCSim file
+
+```{r mcsim}
+# this markdown file must be saved in top level directory for the following to work; the mcsim code depends on getwd results.
+mdir <- "MCSim"
+source(here::here(mdir,"setup_MCSim.R"))
+# Make mod.exe (used to create mcsim executable from model file)
+makemod() 
+```
+
+## Set filenames and load data
+
+
+```{r MCMC  model file, include=FALSE}
+set.seed(314159)
+sa <- "Cbgd-80_" # ADD sensitivity test tag to plot filenames: M_ln_Cbgd_sc to be centered on ln(0.8) instead of 0 (decreased by 20%)
+# Make model executable
+model_file<- "PFAS_1cpt_v8.pop.MCMC.model.R"
+makemcsim(model_file)
+
+in_file <- "PFOA_1cpt_v8.MCMC_TrainTest.in.R" 
+pfas_name <- gsub("_1cpt_v8.MCMC_TrainTest.in.R", "", in_file)
+samps <- data.frame()
+checks <- data.frame()
+samps.list <- list()
+for (chainnum in 1:4) {
+  onechain <- read.delim(sub(".in.R",paste0(chainnum,".out"),in_file))
+  samps.list[[chainnum]]<-mcmc(onechain[floor(nrow(onechain) / 2):nrow(onechain), -1])
+  samps <- rbind(samps,samps.list[[chainnum]])
+  onecheck <- read.delim(sub(".in.R",paste0(chainnum,".check.out"),in_file))
+  onecheck$Chain <- chainnum
+  checks <- rbind(checks,onecheck)
+}
+samps.mcmclist <- as.mcmc.list(samps.list)
+
+load("PFOA_1cpt_v8_multicheck.Rdata")
+```
+
+## Set up dataset
+
+```{r dataset-LUT, cache = TRUE}
+id_lut <- multicheck$df_check %>% select(Level) %>% unique ()  %>%
+  mutate(dataset = c( 
+    rep("Decatur M Train", 9),
+    rep("Decatur F Train", 9),
+    rep("Arnsberg M Train", 41),
+    rep("Arnsberg F Train", 69),
+    rep("Decatur M Test", 9),
+    rep("Decatur F Test", 10),
+    rep("Arnsberg M Test", 41),
+    rep("Arnsberg F Test", 69), 
+    rep("Minnesota Train", 48),
+    rep("Minnesota Test", 47), 
+    'Lubeck-Bartell-Train', 'Lubeck-Bartell-Test',
+    'Little Hocking-Bartell-Train', 'Little Hocking-Bartell-Test',
+    'Little Hocking-Emmett-Test',
+    'Paulsboro-Train','Horsham-Train',
+    'Warminster-Test','Warrington-Train'
+    ), 
+    Sex = c( 
+    rep("M", 9),
+    rep("F", 9),
+    rep("M", 41),
+    rep("F", 69),
+    rep("M", 9),
+    rep("F", 10),
+    rep("M", 41),
+    rep("F", 69), 
+    rep("Mixed",95),
+    rep('Mixed',9)),
+    City = c( 
+    rep("Decatur", 18),
+    rep("Arnsberg", 110),
+    rep("Decatur", 19),
+    rep("Arnsberg", 110),
+    rep("Minnesota", 95),
+    rep('Lubeck-Bartell',2),
+    rep('Little Hocking-Bartell',2),
+    'Little Hocking-Emmett', 
+    'Paulsboro','Horsham','Warminster','Warrington'), 
+    Train_Test = c( 
+    rep("Train", 128),
+    rep("Test", 129),
+    rep("Train",48),
+    rep("Test",47),
+    'Train', 'Test',
+    'Train', 'Test',
+    'Test',
+    'Train','Train',
+    'Test','Test'),
+        datatype = c(
+      rep("Individual",9+9+41+69+9+10+41+69+95),
+      rep("Summary",9)),
+
+    Simulation = row_number(),
+    variable = paste0(dataset, " ",Simulation))
+
+id_lut$dataset <- factor(id_lut$dataset,levels=
+                           c("Decatur M Train","Decatur F Train","Arnsberg M Train",
+                             "Arnsberg F Train","Decatur M Test","Decatur F Test","Arnsberg M Test",
+                             "Arnsberg F Test","Minnesota Train","Minnesota Test",
+                             'Lubeck-Bartell-Train', 'Lubeck-Bartell-Test',
+                             'Little Hocking-Bartell-Train', 'Little Hocking-Bartell-Test',
+                             'Little Hocking-Emmett-Test','Paulsboro-Train','Horsham-Train',
+                             'Warminster-Test','Warrington-Train'))
+id_lut$City <- factor(id_lut$City,levels = 
+                        c("Decatur","Arnsberg","Minnesota",'Lubeck-Bartell',
+                          'Little Hocking-Bartell','Little Hocking-Emmett',
+                          'Paulsboro','Horsham','Warminster','Warrington'))
+
+indiv_lut <- id_lut %>% 
+  filter(City %in% c("Decatur", "Arnsberg","Minnesota")) %>%
+  mutate(  dataset = as.factor(dataset))
+
+nv <- data.frame(dataset =unique(indiv_lut$dataset), 
+           variable= rep("Pop GM", 10),
+           type= rep("Pop GM", 10), stringsAsFactors = FALSE)
+```
+
+## Individual parameters
+```{r indiv-parms, cache = TRUE,fig.height=3.5,fig.width=3.5,dpi=600}
+set.seed(314159)
+
+indiv_parms <- indiv_lut
+lnkparmnames <- paste("ln_k.",gsub("_",".",indiv_parms$Level),".",sep="")
+lnVdparmnames <- paste("ln_Vd.",gsub("_",".",indiv_parms$Level),".",sep="")
+
+parmsamp <- apply(multicheck$parms.samp,2,sample,1)
+
+## Random z-score estimate of each parameter
+indiv_parms$ln_k.z.samp <- parmsamp[lnkparmnames]
+indiv_parms$ln_Vd.z.samp <- parmsamp[lnVdparmnames]
+
+normd <- data.frame(x=qnorm(ppoints(200)))
+normd$y <- dnorm(normd$x)
+
+iplotk<-
+  ggplot(subset(indiv_parms,Train_Test=="Train"))+
+    geom_histogram(aes(x=ln_k.z.samp,after_stat(density)),bins=20)+facet_wrap(~City,ncol=1)+
+    geom_line(aes(x=x,y=y),data=normd)+
+    xlab("Individual z-scores for k") + theme_bw()
+
+iplotVd<-
+  ggplot(subset(indiv_parms,Train_Test=="Train"))+
+    geom_histogram(aes(x=ln_Vd.z.samp,after_stat(density)),bins=20)+facet_wrap(~City,ncol=1)+
+    geom_line(aes(x=x,y=y),data=normd)+
+    xlab("Individual z-scores for Vd") + theme_bw()
+
+print(iplotk)
+print(iplotVd)
+
+ggsave(file.path("output-plots",
+             paste0( sa,"Indiv_zscores_k_PFOA.pdf")),iplotk,dpi=600)
+ggsave(file.path("output-plots",
+             paste0( sa,"Indiv_zscores_Vd_PFOA.pdf")),iplotVd,dpi=600)
+
+ggsave(file.path("output-plots",
+             paste0( sa,"Indiv_zscores_k_PFOA.png")),iplotk,dpi=600)
+ggsave(file.path("output-plots",
+             paste0( sa,"Indiv_zscores_Vd_PFOA.png")),iplotVd,dpi=600)
+# KS test with standard normal distribution
+print(ks.test(subset(indiv_parms,Train_Test=="Train" & 
+                       City=="Decatur")$ln_k.z.samp,"pnorm"))
+print(ks.test(subset(indiv_parms,Train_Test=="Train" & 
+                       City=="Arnsberg")$ln_k.z.samp,"pnorm"))
+print(ks.test(subset(indiv_parms,Train_Test=="Train" & 
+                       City=="Minnesota")$ln_k.z.samp,"pnorm"))
+print(ks.test(subset(indiv_parms,Train_Test=="Train" & 
+                       City=="Decatur")$ln_Vd.z.samp,"pnorm"))
+print(ks.test(subset(indiv_parms,Train_Test=="Train" & 
+                       City=="Arnsberg")$ln_Vd.z.samp,"pnorm"))
+print(ks.test(subset(indiv_parms,Train_Test=="Train" & 
+                       City=="Minnesota")$ln_Vd.z.samp,"pnorm"))
+```
+
+## Scatter plot of predictions (median of multicheck samples) versus data.
+
+This is a Figure 2 panel.  Needed to use "scale=1.1" in ggsave to make sure "City" appeared.
+
+```{r prediction-versus-data , cache = TRUE,fig.height=3.5,fig.width=8,dpi=600}
+nrow(multicheck$df_check)
+nrow(id_lut)
+multicheck$df_check %>% left_join(id_lut) %>% nrow()
+
+names(multicheck$df_check)
+
+multicheck2 <- multicheck$df_check %>% 
+  left_join(id_lut, by = c("Level", "Simulation"))%>% 
+  group_by_at ( vars(-Prediction)) %>% 
+  summarise(Prediction = median(Prediction)) %>%
+  ungroup() %>%
+  group_by(City) %>% 
+  mutate(Train_Test = factor(Train_Test, levels = c("Train", "Test")),
+        `City (datatype)` = case_when(datatype == 'Individual' ~  paste0(City, "\n(", datatype, ")") ,
+                                      datatype == 'Summary' & grepl('-', as.character(City))  ~ 
+                                        paste0(gsub('-', '\n', City),"" ),
+                                      TRUE ~ as.character(City)),
+         `City (datatype)` = factor ( `City (datatype)`),
+         label = case_when(Train_Test=="Train" ~ "A: PFOA Train",
+                           Train_Test=="Test"  ~ "B: PFOA Test",
+                           TRUE ~ ""))
+
+#define color for testing boxplots
+bp_cols <- c (as.character (khroma::colour("muted")(9)) , "#191919")   
+bp_cols <-bp_cols[c(1:7,10:8)]# plot_scheme_colourblind(bp_cols) 
+
+### Create aesthetics lookup
+aes_lut <- multicheck2 %>% ungroup() %>% 
+  group_by(City, datatype,  `City (datatype)` ) %>% summarise () %>% ungroup() %>%
+  mutate( cols = bp_cols, city_fills =   bp_cols , 
+          # for individual level on point plot (multicheck2), darken outlines for visibility, use standard colors otherwise
+         city_outlines =  if_else(datatype == "Individual"  ,  colorspace::darken(city_fills, 0.3), city_fills) ,  
+         shapes = case_when(datatype == "Individual"  & `City` %in% c('Decatur', 'Arnsberg', 'Minnesota')   ~  23,
+                            datatype == "Summary" &`City` %in% c("Horsham", "Warminster",  "Warrington") ~ 2,
+                            datatype == "Summary" & `City` %in%
+                              c("Lubeck-Bartell", "Little Hocking-Bartell",  "Little Hocking-Emmett") ~ 0,
+                            datatype == "Summary" & `City` == "Paulsboro" ~ 1,
+                            TRUE ~ 18                                ), 
+         size = if_else(datatype =="Individual", 1.75, 2.5 ) )  
+
+source( paste0(gsub(basename(here()), 'shared_functions', here()), '/plot_scatter_mcheck.r'))
+
+p2 <- plot_scatter_mcheck(dframe = multicheck2,   pfas_nom = pfas_name, aes_lut_fn = aes_lut ) + 
+  theme(
+    legend.text = element_text(
+    margin = margin(t = 2, b = 2, unit = "pt")) )
+print(p2) 
+
+multicheck2$PFAS <- "PFOA"
+multiplot_scatter_dat <- list(aes_lut = aes_lut, multicheck2 = multicheck2) # save out for use in commbined plot
+save(multiplot_scatter_dat, file =  "pfoa_multiplot_scatter.Rdata")
+
+
+ggsave(here ("output-plots", paste0( sa,"multicheckplot_", pfas_name,
+               ".pdf")),p2,
+       dpi=600, scale=1.1)
+
+ggsave(here ("output-plots", paste0( sa,"multicheckplot_", pfas_name,
+               ".png")),p2,
+       dpi=600, scale=1.1)
+```
+
+## Parse multicheck
+
+```{r do-multicheck, cache = TRUE, fig.width=6, fig.height=18}
+
+df_check <- multicheck$df_check
+df_check <- subset(df_check,Data > 0) 
+
+n1 <- nrow(df_check)
+id_chks <- df_check %>% select(Level) %>% unique() %>% bind_cols(id_lut)  %>%
+  mutate(dataset = as.factor(dataset), Sex = as.factor(Sex), City = as.factor(City), 
+         Train_Test = as.factor(Train_Test))
+
+df_check <- df_check %>% left_join(id_chks)%>%
+  mutate(Dataset = paste(as.character(dataset), Simulation),
+         Sex = ordered(Sex, levels = c("M", "F", "Mixed"), 
+                       labels = c("Male", "Female", "Mixed (all sexes)")))
+
+df_check$Dataset = factor(df_check$Dataset, levels =
+                            unique(paste(as.character(df_check$dataset), df_check$Simulation)))
+n2 <- nrow(df_check)
+if(n1 != n2)print("duplicates created in id-lut join")
+```
+
+```{r do-multicheck-2, cache = TRUE, fig.width=6, fig.height=18}
+df_check$Time.desc <- as.character(paste0("T=",df_check$Time))
+df_check$Time.desc[df_check$Time.desc == "T=1e-06"] <- "SteadyState"
+df_check$Dataset.Time <- interaction(df_check$Dataset,
+                                     df_check$Time.desc,lex.order=TRUE)
+df_check$Dataset.Time <- factor(df_check$Dataset.Time,
+                                levels=levels(df_check$Dataset.Time))
+calibdata <- df_check[,names(df_check) != "Prediction"]
+calibdata <- calibdata[!duplicated(calibdata),]
+print(calibdata)
+ 
+#Multicheck plot
+
+# Split Steady State Group into different populations for boxplot grouping
+#df_check[df_check$Time.desc == "SteadyState" & grepl("Lubeck",df_check$Dataset),]$Time.desc <- "Lubeck"
+#df_check[df_check$Time.desc == "SteadyState" & grepl("Little Hocking",df_check$Dataset),]$Time.desc <- "Little Hocking"
+```
+ 
+
+Modify aesthetics lookup table for boxplots 
+```{r mod-aes-lut}
+##  additional source aesthetic lookup table for grey-scale time (years);  merged legends save space on plotting output
+times <- df_check%>% select(Time.desc, Time) %>%  unique () %>% 
+  mutate(rank = rank(Time) , grey = grey.colors(start=1,end=0.4, n = n()),
+         alpha = (rank)/8) %>% 
+  select(-Time)
+ 
+df_check <- df_check %>% mutate (legend_label = (paste0(City, "\n", Time.desc ) )) # add legend-labels
+aes_lut <- df_check %>% 
+  select(City, Train_Test, datatype,Time, Time.desc, legend_label) %>% unique () %>%
+   left_join(aes_lut[, c("City", "cols")], by = "City") %>% ungroup () %>% unique ()%>%
+   left_join (times, by = "Time.desc") %>% 
+   arrange(datatype, City, Train_Test, Time)    %>% 
+   mutate(alpha = if_else(City == "Horsham", alpha/2, alpha)) %>% # otherwise too dark with this color
+  mutate_if(is.factor, as.character) 
+
+```
+
+## Decatur boxplots
+
+Changed grey start to 1 instead of 0.8, end at 0.6 instead of 0.4.
+Changed shape of symbols so they are filled.
+
+```{r do-multicheck-decatur, cache = TRUE, fig.width=6.5, fig.height=3.5,dpi=600}
+# Decatur 
+
+df_decat  <- df_check %>%   
+  filter(City == "Decatur" & Train_Test %in% c ("Train", "Test")) %>% 
+  mutate(panel = ordered (Train_Test, levels = c ("Train", "Test"), 
+                          labels = c("A: PFOA Decatur Train", "B: PFOA Decatur Test") ) )
+
+aes_lut_df_df_decat <- aes_lut %>% 
+  filter(City == "Decatur" & Train_Test %in% c ("Train", "Test")) %>% 
+  mutate_if(is.factor, as.character) 
+
+source( paste0(gsub(basename(here()), 'shared_functions', here()), '/plot_sum_boxplot.r'))
+
+
+plt_train <- plot_sum_boxplot   (dframe = df_decat, aes_lut= aes_lut_df_df_decat, facets = TRUE , pfas_nom = pfas_name     ) 
+print(plt_train)
+ggsave(here ("output-plots",paste0( sa,"DecaturTrainTestboxplot",pfas_name,".pdf")),plt_train,dpi=600)
+ggsave(here ("output-plots",paste0( sa,"DecaturTrainTestboxplot",pfas_name,".png")),plt_train,dpi=600) 
+
+pfoa_boxplot_decat <- list (df_decat = df_decat, aes_lut= aes_lut_df_df_decat, facets = TRUE , pfas_name)
+save(pfoa_boxplot_decat, file = "pfoa_boxplot_decat_lst.Rdata")
+```
+
+## All boxplots
+
+Changed grey start to 1 instead of 0.8, end at 0.6 instead of 0.4.
+Added shapes and fills to data points.
+
+```{r do-multicheck-all, cache = TRUE, fig.width=6.5, fig.height=3.5, dpi=600}
+print(pfas_name)
+lets <- LETTERS;
+names(lets)[1:(length(unique(df_check$dataset))-4)]<-as.character(unique(df_check$dataset))[c(3,4,7:length(unique(df_check$dataset)))]
+
+for (d in unique(df_check$dataset)) { # d = unique(df_check$dataset)[11]
+
+    ddset <- df_check %>%    
+    filter(dataset == d) 
+    
+    aes_lut_ddset <- ddset %>% select(legend_label,  City,Train_Test,datatype, Time.desc  ) %>% unique () %>% inner_join(aes_lut)
+      
+    gt <- ifelse(is.na(lets[d]),d,paste0(lets[d],": ", d))
+    plt <- plot_sum_boxplot(dframe = ddset, aes_lut= aes_lut_ddset, gtitle= gt, facets = FALSE, pfas_nom = pfas_name)
+     
+  print(plt)
+  ggsave(here ("output-plots",
+                paste0( sa, d,"-boxplot-", 
+                pfas_name,".pdf")) ,
+         plt,dpi=600)
+  
+    ggsave(here ("output-plots",
+                paste0( sa, d,"-boxplot-", 
+                pfas_name,".png")) ,
+         plt,dpi=600)
+
+
+}
+ 
+### make Training plot  
+
+df_d_trt <- df_check %>%   
+     filter( (Train_Test == "Train") & ((Output_Var == "M_Cbgd_Css") | (Output_Var == "M_Cserum"))) %>%
+     mutate_if(is.factor, as.character) %>%  # drop factor levels unused
+     mutate(Dataset.Time = factor(Dataset.Time)) 
+ 
+
+ aes_lut_df_d_trt <-  df_d_trt %>% select(City, datatype,Time, Time.desc, legend_label) %>% 
+   inner_join(aes_lut  ) %>% 
+   select(-Train_Test) %>% ungroup () %>% unique ()  
+
+plt_train <-    plot_sum_boxplot(dframe = df_d_trt, aes_lut= aes_lut_df_d_trt,   
+                                 gtitle="G: Summary Data - Train" , facets = FALSE, 
+                                 pfas_nom = pfas_name )
+  print(plt_train)
+  ggsave(here ("output-plots", paste0( sa, "SummaryTrainDataboxplot",pfas_name,".pdf")), plt_train,dpi=600)
+  ggsave(here ("output-plots", paste0( sa, "SummaryTrainDataboxplot",pfas_name,".png")), plt_train,dpi=600)
+###  make Test plot
+df_d_test <- df_check %>%   
+    filter((Train_Test == "Test") & 
+             ((Output_Var == "M_Cbgd_Css") | (Output_Var == "M_Cserum")))  %>%
+     mutate_if(is.factor, as.character) %>%  # drop factor levels unused
+     mutate(Dataset.Time = factor(Dataset.Time)) 
+
+aes_lut_df_d_test <-  df_d_test %>% select(City, datatype,Time, Time.desc, legend_label) %>% 
+   inner_join(aes_lut  ) %>% 
+   select(-Train_Test) %>% ungroup () %>% unique ()  
+
+plt_test <- plot_sum_boxplot(dframe = df_d_test, aes_lut= aes_lut_df_d_test, 
+                             gtitle="H: Summary Data - Test", facets = FALSE, 
+                                 pfas_nom = pfas_name)
+  print(plt_test)
+  ggsave(here ("output-plots",paste0( sa, "SummaryTestDataboxplot",pfas_name,".pdf")), plt_test,dpi=600)
+  ggsave(here ("output-plots",paste0( sa, "SummaryTestDataboxplot",pfas_name,".png")), plt_test,dpi=600)
+```
+
+## PFOA
+### Background posteriors
+
+Shows shift in background estimate.
+
+```{r get background, cache = TRUE,fig.height=6,fig.width=5,dpi=600}
+gmscale<-0.8
+
+dat <- multicheck$parms.samp[,grep("M_ln_Cbgd",names(multicheck$parms.samp))]
+datasetnames <- as.character(unique(calibdata$dataset))
+datasetnames <- gsub(" M","",datasetnames)
+datasetnames <- gsub(" F","",datasetnames)
+datasetnames<-datasetnames[!duplicated(datasetnames)]
+names(dat) <- datasetnames
+dat <- dat[,grep("Train",names(dat))]
+dat.df <- pivot_longer(dat,1:ncol(dat))
+dat.df <- rbind(dat.df,
+                data.frame(name="Prior",value=rnorm(5000,m=log(gmscale),sd=0.4055)))
+dat.df$name <- factor(dat.df$name,levels=rev(
+                        c("Prior",datasetnames[grep("Train",datasetnames)])))
+dat.df$value <- exp(dat.df$value)
+
+p<-ggplot(dat.df)+
+  #geom_violin(aes(x=name,y=value,fill=name=="Prior"))+
+  geom_boxplot(aes(x=name,y=value,fill=name=="Prior"),outlier.shape=NA)+
+  scale_y_log10()+coord_flip()+
+  scale_fill_manual(name="Prior", 
+                    values=c("#009988", "#EE7733" )) +
+  theme_classic() +  
+  geom_hline(yintercept = gmscale,color="grey")+
+  theme(legend.position="none",
+      panel.background = element_rect(color="black",size=1))+
+  ylab("Posterior shift in Background Concentration")
+
+print(p)
+ggsave(here ("output-plots",paste0( sa, "PFOA_GM_Cbgd.pdf")), p,dpi=600)
+ggsave(here ("output-plots",paste0( sa, "PFOA_GM_Cbgd.png")), p,dpi=600)
+```
+
+### DWC below MRL
+
+```{r dwcbelowmrl, message=FALSE, warning=FALSE,fig.height=2.5,fig.width=4,dpi=600}
+
+pindx <- grep("DWC_below",names(multicheck$parms.samp))
+dwc <- multicheck$parms.samp[,pindx]
+names(dwc) <- c("Lubeck-Bartell-Train",
+                "Lubeck-Bartell-Test",
+                "Little Hocking-Bartell-Train",
+                "Little Hocking-Bartell-Test")
+dwc.df <- pivot_longer(dwc,1:4)
+names(dwc.df) <- c("Dataset","DWC below MRL")
+dwc.df$Dataset <- factor(dwc.df$Dataset,
+                         levels=c("Lubeck-Bartell-Train",
+                "Lubeck-Bartell-Test",
+                "Little Hocking-Bartell-Train",
+                "Little Hocking-Bartell-Test"))
+
+dwc.train.df <- dwc.df[grepl("Train",dwc.df$Dataset),]
+
+p<- ggplot(dwc.train.df)+
+  geom_histogram(aes(`DWC below MRL`,
+                     color="Posterior",
+                     linetype="Posterior"),
+                 fill=NA,
+                 breaks=seq(0,0.016,0.002))+
+  geom_hline(aes(yintercept = 500/8,
+                 color="Prior",linetype="Prior"))+
+  facet_wrap(~Dataset)+
+  labs(title = "A: PFOA")+
+  xlab("Drinking Water Conc. Below MRL")+
+  ylab("")+ylim(0,100)+
+  scale_color_manual(name=NULL,#
+                    values=c(Prior="#009988", Posterior="#EE7733" )) +  
+  scale_linetype_manual(name=NULL,#
+                    values=c(Prior="dotted", Posterior="solid" ))+
+  theme_classic() +  
+  theme(legend.title = element_blank(),legend.position=c(0.9,0.9),
+      panel.background = element_rect(color="black",size=1),
+      legend.background = element_rect(fill="transparent", color=NA))
+print(p)
+
+ggsave(here ("output-plots",paste0( sa, "PFOA_DWC_below_MRL.pdf")) ,p,dpi=600)
+ggsave(here ("output-plots",paste0( sa, "PFOA_DWC_below_MRL.png")) ,p,dpi=600)
+save(p,dwc.train.df,file=here("output-plots",paste0( sa, "PFOA_DWC_below_MRL.RData")))
+
+dwc.train.q <- aggregate(`DWC below MRL`~Dataset,
+                         data=dwc.train.df,
+                         FUN=quantile,
+         prob=c(0.025,0.05,0.25,0.5,0.75,0.95,0.975))
+write.csv(as.matrix(dwc.train.q),
+          file=here("output-plots",paste0( sa, "PFOA_DWC_below_MRL.csv")))
+
+```
+
+### Half-life
+
+```{r read-in-out-chains, cache = TRUE}
+
+dat <- multicheck$parms.samp[,c("M_ln_k.1.","V_ln_k.1.", "M_ln_Vd.1.", "SD_ln_Vd.1.")]
+names(dat) <- c("M_ln_k(1)","V_ln_k(1)", "M_ln_Vd(1)", "SD_ln_Vd(1)")
+
+set.seed(3.14159)
+dat$z_ln_k <- rnorm(nrow(dat))
+dat$z_ln_Vd <- rnorm(nrow(dat))
+dat %>% rename_()
+dat$ln_k_i <- dat$`M_ln_k(1)` + sqrt(dat$`V_ln_k(1)`)*dat$z_ln_k
+dat$ln_Vd_i <- dat$`M_ln_Vd(1)`+ dat$`SD_ln_Vd(1)`*dat$z_ln_Vd
+linmod <- lm(ln_Vd_i ~ ln_k_i,data=dat)
+ggplot(dat) + geom_point(aes(ln_k_i,ln_Vd_i)) + 
+  labs(subtitle=paste("Adj R2 =",signif(summary(linmod)$adj.r.squared,2)))
+```
+
+
+## Check normality
+
+```{r normality, cache = TRUE}
+
+qqnorm(dat$ln_k_i,main="ln k Q-Q Normal")
+qqline(dat$ln_k_i,col="red")
+plot(ecdf(dat$ln_k_i))
+x <- seq(-3,1,0.01)
+m_ln_k_i <-   mean(dat$ln_k_i)
+sd_ln_k_i <- sd(dat$ln_k_i)
+lines(x,pnorm(x,mean=m_ln_k_i,sd=sd_ln_k_i),col="red")
+text(m_ln_k_i-2*sd_ln_k_i,0.9,paste("m =",signif(m_ln_k_i,4),"\nsd =",signif(sd_ln_k_i,4)))
+
+qqnorm(dat$ln_Vd_i,main="ln Vd Q-Q Normal")
+qqline(dat$ln_Vd_i,col="red")
+plot(ecdf(dat$ln_Vd_i))
+x <- seq(-3,1,0.01)
+m_ln_Vd_i <- mean(dat$ln_Vd_i)
+sd_ln_Vd_i <- sd(dat$ln_Vd_i)
+
+lines(x,pnorm(x,mean=m_ln_Vd_i,sd=sd_ln_Vd_i),col="red")
+text(m_ln_Vd_i-2*sd_ln_Vd_i,0.9,paste("m =",signif(m_ln_Vd_i,4),"\nsd =",signif(sd_ln_Vd_i,4)))
+
+```
+## Fit to posterior for half-life population variability 
+
+```{r hl variability posterior}
+
+ln_V_ln_k <- log(dat$`V_ln_k(1)`)
+qqnorm(ln_V_ln_k,main="ln V_ln_k Q-Q Normal")
+qqline(ln_V_ln_k,col="red")
+plot(ecdf(ln_V_ln_k))
+m_ln_V_ln_k <- mean(ln_V_ln_k)
+sd_ln_V_ln_k <- sd(ln_V_ln_k)
+x <- seq(-3,0,0.01)
+
+lines(x,pnorm(x,mean=m_ln_V_ln_k,sd=sd_ln_V_ln_k),col="red")
+text(m_ln_V_ln_k-2*sd_ln_V_ln_k,0.9,paste("m =",signif(m_ln_V_ln_k,4),"\nsd =",signif(sd_ln_V_ln_k,4)))
+text(m_ln_V_ln_k-2*sd_ln_V_ln_k,0.7,paste("GM =",signif(exp(m_ln_V_ln_k),4),"\nGSD =",signif(exp(sd_ln_V_ln_k),4)))
+```
+
+## Calculate table values for individual-level
+```{r make-individual-param-out, cache = TRUE}
+hl_i <- log(2)/ exp(dat$ln_k_i) # individual half-life 
+med_hl_i <- paste(signif (median (hl_i), 3)) # median of individual half-life
+ci_med_hl_i <-   paste(signif (quantile(hl_i, prob=c(0.025,0.975)), 3),collapse="-") # 95ci med individual halflife
+gm_hl_i <- paste(signif (exp(mean(log(hl_i))), 3)) # gm (which should be really close)
+gsd_hl_i <- paste(signif (exp(sd(log(hl_i))), 3)) # gsd individual
+
+med_Vd_i <- paste(signif (median(exp(dat$ln_Vd_i)), 3)) # median individual Vd
+ci_med_Vd_i <-paste(signif (quantile(exp(dat$ln_Vd_i), prob=c(0.025,0.975)), 3),collapse="-") # 95ci med individual Vd
+gm_vd_i <- paste(signif (exp(mean(dat$ln_Vd_i)), 3)) # gm (which should be really close)
+gsd_vd_i<- paste(signif (exp(sd(dat$ln_Vd_i)), 3)) # gsd indiv
+
+med_CL_i <- paste(signif (median(exp(dat$ln_Vd_i+dat$ln_k_i)), 3)) # median individual CL
+ci_med_CL_i <-paste(signif (quantile(exp(dat$ln_Vd_i+dat$ln_k_i), prob=c(0.025,0.975)), 3),collapse="-") # 95ci med individual CL
+ci98_med_CL_i <-paste(signif (quantile(exp(dat$ln_Vd_i+dat$ln_k_i), prob=c(0.01,0.99)), 3),collapse="-") # 98ci med individual CL
+gm_CL_i <- paste(signif (exp(mean(dat$ln_Vd_i+dat$ln_k_i)), 3)) # gm (which should be really close)
+gsd_CL_i<- paste(signif (exp(sd(dat$ln_Vd_i+dat$ln_k_i)), 3)) # gsd indiv
+```
+
+
+```{r half-life, message=FALSE, warning=FALSE,fig.height=2.5,fig.width=4,dpi=600}
+PFOA_priors <- data.frame(
+  halflife_GM= log(2)/rlnorm(50000,
+                             meanlog=-1.8971,sdlog=0.4055))
+
+M_k <- exp(as.numeric(dat$`M_ln_k(1)`))
+PFOA_halflife_GM <- log(2)/M_k
+
+pfoa_hlgm_pr_med <- signif(median(PFOA_priors$halflife_GM,3))
+pfoa_hlgm_pr_med_95ci <-paste(signif(quantile(PFOA_priors$halflife_GM,
+                                            prob=c(0.025,0.975)),
+                                   3),
+                            collapse="-")
+
+pfoa_hl_median_gm <- signif(median(PFOA_halflife_GM),3)
+pfoa_hl_median_gm_95ci <- paste(signif(quantile(PFOA_halflife_GM,
+                                            prob=c(0.025,0.975)),3),collapse="-")
+
+p<-ggplot()+
+  stat_density(aes(halflife_GM, color = "Prior", linetype = "Prior"),data=PFOA_priors,geom="line",size=1 )+
+  stat_density(aes(PFOA_halflife_GM,stat(density),color="Posterior", linetype = "Posterior"),geom="line",size=1.5  )+
+  xlim(0,15)+
+  labs(title = bquote("A: PFOA"~T[1/2]~"Population GM"),  
+       subtitle=paste("Posterior Median (95% CI): ",
+                      pfoa_hl_median_gm," (",
+                      pfoa_hl_median_gm_95ci,
+                      ")",sep=""))+
+  xlab(bquote("Population GM"~T[1/2]~"(yrs)")) +
+  scale_color_manual(name=NULL,#
+                    values=c(Prior="#009988", Posterior="#EE7733" )) + 
+  scale_linetype_manual(name=NULL,#
+                    values=c(Prior="dotted", Posterior="solid" ))+
+  theme_classic() +  
+  theme(legend.title = element_blank(),legend.position=c(0.8,0.7),
+      panel.background = element_rect(color="black",size=1),
+      legend.background = element_rect(fill="transparent", color=NA))
+print(p)
+ggsave(here ("output-plots",paste0( sa, "PFOA_hl_gm.pdf")), p,dpi=600)
+ggsave(here ("output-plots",paste0( sa, "PFOA_hl_gm.png")), p,dpi=600)
+save(p,PFOA_priors,PFOA_halflife_GM,pfoa_hl_median_gm,pfoa_hl_median_gm_95ci,file=here("output-plots",paste0( sa, "PFOA_hl_gm.RData")))
+
+```
+
+
+
+```{r PFOA-half-life-gsd, message=FALSE, warning=FALSE,fig.height=2.5,fig.width=4,dpi=600}
+PFOA_priors$halflife_GSD = exp(sqrt(1/rgamma(50000,shape=9,rate=0.75))) #inverse gamma for the first trial
+PFOA_halflife_GSD <- exp(sqrt(dat$`V_ln_k(1)`))
+
+pfoa_hlgsd_pr_med <- signif(median(PFOA_priors$halflife_GSD,3))
+pfoa_hlgsd_pr_med_95ci <-paste(signif(quantile(PFOA_priors$halflife_GSD,
+                                            prob=c(0.025,0.975)),
+                                   3),
+                            collapse="-")
+pfoa_hl_gsd_med <- signif(median(PFOA_halflife_GSD),3)
+pfoa_hl_gsd_med_95ci <- paste(signif(quantile(PFOA_halflife_GSD,
+                                            prob=c(0.025,0.975)),3),collapse="-")
+p<-ggplot()+
+  stat_density(aes(halflife_GSD, color = "Prior", linetype = "Prior"),data=PFOA_priors,geom="line",size=1)+
+  stat_density(aes(PFOA_halflife_GSD,stat(density), color = "Posterior", linetype = "Posterior"),geom="line",size=1.5)+
+  xlim(1,3)+
+  labs(title = bquote( "B: PFOA"~T[1/2]~"Population GSD"),  
+       subtitle=paste("Posterior Median (95% CI): ",
+                      pfoa_hl_gsd_med," (",
+                      pfoa_hl_gsd_med_95ci,
+                      ")",sep=""))+
+  xlab(bquote("Population GSD"~T[1/2]))+
+  scale_color_manual(name=NULL,#
+                    values=c(Prior="#009988", Posterior="#EE7733" ))+ 
+  scale_linetype_manual(name=NULL,#
+                    values=c(Prior="dotted", Posterior="solid" ))+
+  theme_classic() +  
+  theme(legend.title = element_blank(),legend.position=c(0.8,0.7),
+      panel.background = element_rect(color="black",size=1),
+      legend.background = element_rect(fill="transparent", color=NA))
+print(p)
+ggsave(here ("output-plots",paste0( sa, "PFOA_hl_gsd.pdf")) ,p,dpi=600)
+ggsave(here ("output-plots",paste0( sa, "PFOA_hl_gsd.png")) ,p,dpi=600)
+save(p,PFOA_priors,PFOA_halflife_GSD,pfoa_hl_gsd_med,pfoa_hl_gsd_med_95ci,file=here("output-plots",paste0( sa, "PFOA_hl_gsd.RData")))
+
+```
+
+
+### Distribution Volume
+
+
+```{r PFOA-vd-gm, message=FALSE, warning=FALSE,fig.height=2.5,fig.width=4,dpi=600}
+PFOA_priors$Vd_GM <- rlnorm(50000,
+                             meanlog=-1.7720,
+                             sdlog=0.2624)
+PFOA_Vd_GM <- exp(dat$`M_ln_Vd(1)`)
+
+ 
+
+pfoa_vd_gm_pr_med <- signif(median(PFOA_priors$Vd_GM,3))
+pfoa_vd_gm_pr_med_95ci <- paste(signif(quantile(PFOA_priors$Vd_GM,
+                                            prob=c(0.025,0.975)), 3), collapse="-")
+pfoa_vd_gm_med <- signif(median(PFOA_Vd_GM),3)
+pfoa_vd_gm_med_95ci <- paste(signif(quantile(PFOA_Vd_GM,
+                                            prob=c(0.025,0.975)),3),collapse="-")
+
+p<-ggplot()+
+  stat_density(aes(Vd_GM, color = "Prior", linetype = "Prior"),data=PFOA_priors,geom="line",size=1)+
+  stat_density(aes(PFOA_Vd_GM,stat(density), color = "Posterior", linetype = "Posterior"),geom="line",size=1.5)+
+  xlim(0,1)+
+  labs(title = bquote( "A: PFOA"~V[d]~"Population GM"),
+    subtitle = paste0("Posterior Median (95% CI): ", pfoa_vd_gm_med," (", pfoa_vd_gm_med_95ci, ")" )
+  )+
+  xlab(bquote("Population GM"~V[d]~"(l/kg)"))+
+  scale_color_manual(name=NULL,#
+                    values=c(Prior="#009988", Posterior="#EE7733" )) +  
+  scale_linetype_manual(name=NULL,#
+                    values=c(Prior="dotted", Posterior="solid" ))+
+  theme_classic() +  
+  theme(legend.title = element_blank(),legend.position=c(0.8,0.7),
+      panel.background = element_rect(color="black",size=1),
+      legend.background = element_rect(fill="transparent", color=NA))
+print(p)
+ggsave(here ("output-plots",paste0( sa, "PFOA_vd_gm.pdf")) ,p,dpi=600)
+ggsave(here ("output-plots",paste0( sa, "PFOA_vd_gm.png")) ,p,dpi=600)
+save(p,PFOA_priors,PFOA_Vd_GM,pfoa_vd_gm_med,pfoa_vd_gm_med_95ci,file=here("output-plots",paste0( sa, "PFOA_vd_gm.RData")))
+
+```
+
+
+```{r PFOA-vd-sd, message=FALSE, warning=FALSE,fig.height=2.5,fig.width=4,dpi=600}
+PFOA_priors$Vd_GSD = exp(abs(rnorm(50000,sd=0.17)))
+PFOA_Vd_GSD <- exp(dat$`SD_ln_Vd(1)`)
+
+pfoa_vd_gsd_pr_med <- signif(median(PFOA_priors$Vd_GSD,3))
+pfoa_vd_gsd_pr_med_95ci <- paste(signif(quantile(PFOA_priors$Vd_GSD,
+                                            prob=c(0.025,0.975)), 3), collapse="-")
+
+pfoa_vd_gsd_med <- signif(median(PFOA_Vd_GSD),3)
+pfoa_vd_gsd_med_95ci <- paste(signif(quantile(PFOA_Vd_GSD,
+                                            prob=c(0.025,0.975)),3),collapse="-")
+
+p<-ggplot()+
+  stat_density(aes(Vd_GSD, color = "Prior", linetype = "Prior"),data=PFOA_priors,geom="line",size=1)+
+  stat_density(aes(PFOA_Vd_GSD,stat(density), color = "Posterior", linetype = "Posterior"),geom="line",size=1.5)+
+  xlim(1,3)+
+  labs(title = bquote("B: PFOA"~V[d]~"Population GSD "),
+       subtitle=paste("Posterior Median (95% CI): ",
+                      pfoa_vd_gsd_med," (",
+                      pfoa_vd_gsd_med_95ci,
+                      ")",sep=""))+
+  xlab(bquote("Population GSD"~V[d]))+
+  scale_color_manual(name=NULL, 
+                     values=c(Prior="#009988", Posterior="#EE7733" )) +  
+  scale_linetype_manual(name=NULL,#
+                    values=c(Prior="dotted", Posterior="solid" ))+
+  theme_classic() +  
+  theme(legend.title = element_blank(),legend.position=c(0.8,0.7),
+      panel.background = element_rect(color="black",size=1),
+      legend.background = element_rect(fill="transparent", color=NA))
+print(p)
+ggsave(here ("output-plots",paste0( sa, "PFOA_vd_gsd.pdf")) ,p,dpi=600)
+ggsave(here ("output-plots",paste0( sa, "PFOA_vd_gsd.png")) ,p,dpi=600)
+save(p,PFOA_priors,PFOA_Vd_GSD,pfoa_vd_gsd_med,pfoa_vd_gsd_med_95ci,file=here("output-plots",paste0( sa, "PFOA_vd_gsd.RData")))
+
+```
+
+### Clearance
+
+Cl is k * Vd
+
+```{r PFOA-cl-gm, message=FALSE, warning=FALSE,fig.height=2.5,fig.width=4,dpi=600}
+PFOA_priors$CL_GM <- PFOA_priors$Vd_GM * (log(2)/PFOA_priors$halflife_GM)
+PFOA_CL_GM <- exp(dat$`M_ln_Vd(1)` + dat$`M_ln_k(1)`)
+
+pfoa_cl_gm_pr_med <- signif(median(PFOA_priors$CL_GM,3))
+pfoa_cl_gm_pr_med_95ci <- paste(signif(quantile(PFOA_priors$CL_GM,
+                                            prob=c(0.025,0.975)), 3), collapse="-")
+pfoa_cl_gm_med <- signif(median(PFOA_CL_GM),3)
+pfoa_cl_gm_med_95ci <- paste(signif(quantile(PFOA_CL_GM,
+                                            prob=c(0.025,0.975)),3),collapse="-")
+
+p<-ggplot()+
+  stat_density(aes(CL_GM, color = "Prior", linetype = "Prior"),data=PFOA_priors,geom="line",size=1)+
+  stat_density(aes(PFOA_CL_GM,stat(density), color = "Posterior", linetype = "Posterior"),geom="line",size=1.5)+
+  xlim(0,0.25)+labs(title = "A: PFOA CL Population GM ",subtitle=paste("Posterior Median (95% CI): ",
+                                                                    pfoa_cl_gm_med," (",
+                                                                    pfoa_cl_gm_med_95ci,
+                                                                    ")",sep=""))+
+  xlab("Pop. GM CL (l/(kg-yr))")+
+  scale_color_manual(name=NULL,#
+                    values=c(Prior="#009988", Posterior="#EE7733" )) +  
+  scale_linetype_manual(name=NULL,#
+                    values=c(Prior="dotted", Posterior="solid" ))+
+  theme_classic() +  
+  theme(legend.title = element_blank(),legend.position=c(0.8,0.7),
+      panel.background = element_rect(color="black",size=1),
+      legend.background = element_rect(fill="transparent", color=NA))
+print(p)
+ggsave(here ("output-plots",paste0( sa, "PFOA_CL_gm.pdf")), p,dpi=600)
+ggsave(here ("output-plots",paste0( sa, "PFOA_CL_gm.png")), p,dpi=600)
+save(p,PFOA_priors,PFOA_CL_GM,pfoa_cl_gm_med,pfoa_cl_gm_med_95ci,file=here("output-plots",paste0( sa, "PFOA_CL_gm.RData")))
+
+```
+
+
+```{r PFOA-CL-sd, message=FALSE, warning=FALSE,fig.height=2.5,fig.width=4,dpi=600}
+PFOA_priors$CL_GSD = exp(sqrt(log(PFOA_priors$Vd_GSD)^2 + 
+  log(PFOA_priors$halflife_GSD)^2))
+PFOA_CL_GSD <- exp(sqrt(log(PFOA_Vd_GSD)^2 + 
+  log(PFOA_halflife_GSD)^2))
+
+PFOA_CL_gsd_pr_med <- signif(median(PFOA_priors$CL_GSD,3))
+PFOA_CL_gsd_pr_med_95ci <- paste(signif(quantile(PFOA_priors$CL_GSD,
+                                            prob=c(0.025,0.975)), 3), collapse="-")
+
+PFOA_CL_gsd_med <- signif(median(PFOA_CL_GSD),3)
+PFOA_CL_gsd_med_95ci <- paste(signif(quantile(PFOA_CL_GSD,
+                                            prob=c(0.025,0.975)),3),collapse="-")
+
+p<-ggplot()+
+  stat_density(aes(CL_GSD, color = "Prior", linetype = "Prior"),data=PFOA_priors,geom="line",size=1)+
+  stat_density(aes(PFOA_CL_GSD,stat(density), color = "Posterior", linetype = "Posterior"),geom="line",size=1.5)+
+  xlim(1,3)+
+  labs(title = bquote("B: PFOA"~CL~"Population GSD "),
+       subtitle=paste("Posterior Median (95% CI): ",
+                      PFOA_CL_gsd_med," (",
+                      PFOA_CL_gsd_med_95ci,
+                      ")",sep=""))+
+  xlab(bquote("Population GSD"~CL))+
+  scale_color_manual(name=NULL, 
+                     values=c(Prior="#009988", Posterior="#EE7733" )) + 
+  scale_linetype_manual(name=NULL,#
+                    values=c(Prior="dotted", Posterior="solid" ))+
+  theme_classic() +  
+  theme(legend.title = element_blank(),legend.position=c(0.8,0.7),
+      panel.background = element_rect(color="black",size=1),
+      legend.background = element_rect(fill="transparent", color=NA))
+print(p)
+ggsave(here ("output-plots",paste0( sa,"PFOA_CL_gsd.pdf")) ,p,dpi=600)
+ggsave(here ("output-plots",paste0( sa,"PFOA_CL_gsd.png")) ,p,dpi=600)
+save(p,PFOA_priors,PFOA_CL_GSD,PFOA_CL_gsd_med,PFOA_CL_gsd_med_95ci,file=here("output-plots",paste0( sa, "PFOA_CL_gsd.RData")))
+
+```
+
+## Table significant digit values
+
+```{r table-vars }
+pfoa_hlgm_pr_med <- paste(signif(pfoa_hlgm_pr_med, 3))
+pfoa_hl_median_gm<- paste(signif(pfoa_hl_median_gm, 3))
+pfoa_hlgsd_pr_med<- paste(signif(pfoa_hlgsd_pr_med, 3))
+pfoa_hl_gsd_med<- paste(signif(pfoa_hl_gsd_med, 3))
+pfoa_vd_gm_pr_med<- paste(signif(pfoa_vd_gm_pr_med, 3))
+pfoa_vd_gm_med<- paste(signif(pfoa_vd_gm_med, 3))
+pfoa_vd_gsd_pr_med<- paste(signif(pfoa_vd_gsd_pr_med, 3))
+pfoa_vd_gsd_med<- paste(signif(pfoa_vd_gsd_med, 3))
+pfoa_cl_gm_pr_med<- paste(signif(pfoa_cl_gm_pr_med, 3))
+pfoa_cl_gm_med<- paste(signif(pfoa_cl_gm_med, 3))
+```
+
+### Population median estimates [95% CI] 
+
+| Parameter                      | Prior GM      | Posterior GM | Prior  GSD    | Posterior GSD | 
+| -------------------------------|:-------------:|:------------:|:-------------:|:-------------:| 
+| Half-life (years)  | `r paste(pfoa_hlgm_pr_med) ` |   `r paste(pfoa_hl_median_gm) `    | `r  paste(pfoa_hlgsd_pr_med) `           | `r paste(pfoa_hl_gsd_med)`  | 
+| HL  [95% CI]  |`r paste0("[",pfoa_hlgm_pr_med_95ci,"]")` | `r paste0( "[",pfoa_hl_median_gm_95ci,"]")`| `r paste0("[",pfoa_hlgsd_pr_med_95ci,"]")`| `r paste0( "[",pfoa_hl_gsd_med_95ci, "]")`|
+| Volume of distribution    | `r paste(pfoa_vd_gm_pr_med) ` |    `r paste(  pfoa_vd_gm_med) `|   `r  paste(pfoa_vd_gsd_pr_med)`  |`r  paste(pfoa_vd_gsd_med)` |  
+| $V_D$ [95% CI]    |`r paste0( "[",pfoa_vd_gm_pr_med_95ci,"]")`| `r paste0( "[",pfoa_vd_gm_med_95ci,"]")`| `r paste0("[",pfoa_vd_gsd_pr_med_95ci, "]")`| `r paste0(  "[",pfoa_vd_gsd_med_95ci, "]")`| 
+| Clearance    | `r paste(pfoa_cl_gm_pr_med) ` |    `r paste(  pfoa_cl_gm_med) `|   `r  paste()`  |`r  paste()` |  
+| $CL$ [95% CI]    |`r paste0( "[",pfoa_cl_gm_pr_med_95ci,"]")`| `r paste0( "[",pfoa_cl_gm_med_95ci,"]")`| `r paste0("[", "]")`| `r paste0(  "[", "]")`| 
+ 
+
+
+
+### Individual Posterior estimates 
+
+| Parameter                      |  median GM  [95% CI] | GM calculator input  |  GSD individual |
+| -------------------------------|:--------------------:|:--------------------:|:---------------------:| 
+| Half-life (years)              | `r  paste(med_hl_i, "[",ci_med_hl_i,"]") ` | `r  paste(gm_hl_i) ` | `r  paste(gsd_hl_i)`|
+| Volume of distribution $V_D$   | `r  paste(med_Vd_i, "[",ci_med_Vd_i,"]") `|  `r  paste(gm_vd_i) ` | `r  paste(gsd_vd_i) `| 
+| Clearance (L/kg-yr)   | `r  paste(med_CL_i, "[",ci_med_CL_i,"]", "[[",ci98_med_CL_i,"]]") ` | `r  paste(gm_CL_i) ` | `r  paste(gsd_CL_i) `| 
+
+
+
+
+```{r echo=FALSE}
+devtools::session_info()
+```

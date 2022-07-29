@@ -1,0 +1,80 @@
+---
+title: "PFOA 1 compartment Check Convergence (v8)"
+author: "Weihsueh Chiu, Claire Lay, Parker Malek"
+date: "`r format(Sys.time(), '%F')`"
+knit: (function(inputFile, encoding) {outdir = file.path(dirname(inputFile), 'markdown', paste0(format(Sys.time(), '%F'))); if(!dir.exists(outdir)){dir.create(outdir)}; rmarkdown::render(inputFile, encoding = encoding, output_format = 'all', output_dir = outdir) })
+output:
+  word_document: default
+  html_notebook:
+    code_folding: hide
+    df_print: kable
+    toc: yes
+    toc_depth: 5
+---
+
+```{r setup}
+library(coda)
+library(bayesplot) 
+library(ggplot2)
+library(tidyverse)
+library(reshape2)
+library(here)
+knitr::opts_chunk$set(echo = TRUE, dpi = 300 )
+```
+
+Set up MCSim file 
+
+```{r mcsim}
+# this markdown file must be saved in top level directory for the following to work; the mcsim code depends on getwd results.
+mdir <- "MCSim"
+source(here::here(mdir,"setup_MCSim.R"))
+# Make mod.exe (used to create mcsim executable from model file)
+makemod() 
+```
+
+```{r MCMC  model file, include=FALSE}
+set.seed(314159)
+# Make model executable
+model_file<- "PFAS_1cpt_v8.pop.MCMC.model.R"
+makemcsim(model_file)
+
+in_file <- "PFOA_1cpt_v8.MCMC_TrainTest.in.R" 
+
+samps <- data.frame()
+checks <- data.frame()
+samps.list <- list()
+for (chainnum in 1:4) {
+  onechain <- read.delim(sub(".in.R",paste0(chainnum,".out"),in_file))
+  samps.list[[chainnum]]<-mcmc(onechain[floor(nrow(onechain) / 2):nrow(onechain), -1])
+  samps <- rbind(samps,samps.list[[chainnum]])
+  onecheck <- read.delim(sub(".in.R",paste0(chainnum,".check.out"),in_file))
+  onecheck$Chain <- chainnum
+  checks <- rbind(checks,onecheck)
+}
+samps.mcmclist <- as.mcmc.list(samps.list)
+
+```
+
+## Check convergence
+
+
+```{r samps mcmc summary, message=TRUE, warning=FALSE}
+print(try(summary(samps.mcmclist, na.rm = TRUE))) 
+```
+
+Checking convergence (require Rhat < 1.2) and posterior distributions.  Samples already have burn-in discarded.
+
+```{r MCMC convergence check}
+rhat <- gelman.diag(samps.mcmclist,multivariate=FALSE,autoburnin = FALSE)
+rhat.vec <- as.numeric(rhat$psrf[,1])
+names(rhat.vec) <- names(rhat$psrf[,1])
+print((as.matrix(rhat.vec)))
+
+mcmc_rhat(rhat.vec,pars=names(rhat.vec))
+
+```
+
+
+```{r echo=FALSE}
+devtools::session_info()
+```
