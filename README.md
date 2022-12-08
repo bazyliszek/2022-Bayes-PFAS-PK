@@ -1,3 +1,3 @@
 # 2022-Bayes-PFAS-PK
 PK 
-Aapplying Bayes concept for norwegian data sets
+Applying a Bayes concept for Norwegian dummy data sets
