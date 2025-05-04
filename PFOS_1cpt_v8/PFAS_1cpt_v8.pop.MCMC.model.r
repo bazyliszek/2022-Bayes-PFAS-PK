@@ -38,25 +38,25 @@
 #   Cbgd_Css includes possible intervention at time interval t before measurement
 #   both for individual and population mean
 
-States = {
+States = c(
   Cserum_t # ODE solution for time-varying DWC
-};
+);
 
-Inputs = { DWC, # Drinking water concentration (ug/L) (constant)
+Inputs = c( DWC, # Drinking water concentration (ug/L) (constant)
   DWC_t, # Drinking water concentration (ug/L) (time-varying)
   Cbgd_in_gm, # Background concentration GM (central estimate)
   Cbgd_in_gsd, # Background concentration GSD (central estimate)
   C_0_in_gm, # Initial concentration GM (central estimate)
-  C_0_in_gsd}; # Initial concentration GSD (central estimate)
+  C_0_in_gsd); # Initial concentration GSD (central estimate)
 
-Outputs = { 
+Outputs = c( 
   # Individual predictions
   Cbgd_Css, Cserum,   # Serum concentration (ug/L) including background
   # Population predictions
   M_Cbgd_Css, M_Cserum, 
   # Individual parameters
   Cbgd, C_0, k, Vd, DWI_BW_d
-  };
+);
 
 # Population Mean Parameters
 M_ln_Cbgd_sc = 0; # Background serum concentration scaling (e.g., 2.7 ug/L)
